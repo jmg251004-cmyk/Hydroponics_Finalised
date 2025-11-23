@@ -65,10 +65,23 @@ export function BatchImageTraining() {
                 <p className="text-xs text-muted-foreground">Training CNN model... {progress}%</p>
               </div>
             ) : (
-              <Button size="lg" onClick={handleUpload}>
-                <Upload className="mr-2 h-4 w-4" />
-                Select Archive
-              </Button>
+              <>
+                <input 
+                  id="zip-upload" 
+                  type="file" 
+                  accept=".zip" 
+                  className="hidden" 
+                  onChange={handleUpload}
+                />
+                <Label htmlFor="zip-upload">
+                  <Button size="lg" className="cursor-pointer" asChild>
+                    <span>
+                      <Upload className="mr-2 h-4 w-4" />
+                      Select Archive
+                    </span>
+                  </Button>
+                </Label>
+              </>
             )}
           </div>
         </Card>

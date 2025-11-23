@@ -44,8 +44,14 @@ export function ImageDiagnostics() {
       if (selectedImage === kDefLeaf) predictedClass = 'K Deficiency';
       else if (selectedImage === healthyLeaf) predictedClass = 'Healthy';
       else {
-        const classes = ['K Deficiency', 'N Deficiency', 'P Deficiency', 'FN', 'Healthy'];
-        predictedClass = classes[Math.floor(Math.random() * classes.length)];
+        // Default to "Healthy" more often, or pick a deficiency
+        const roll = Math.random();
+        if (roll > 0.7) { // 30% chance of finding a deficiency
+           const classes = ['K Deficiency', 'N Deficiency', 'P Deficiency', 'FN'];
+           predictedClass = classes[Math.floor(Math.random() * classes.length)];
+        } else {
+           predictedClass = 'Healthy';
+        }
       }
       
       setResult({
