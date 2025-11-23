@@ -2,6 +2,7 @@
 import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
 import { Upload, FolderArchive, BarChart3 } from 'lucide-react';
 import { Progress } from "@/components/ui/progress";
 import { 
@@ -14,7 +15,10 @@ export function BatchImageTraining() {
   const [progress, setProgress] = useState(0);
   const [isTrained, setIsTrained] = useState(false);
 
-  const handleUpload = () => {
+  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    
+    // File is selected, start the training simulation
     setIsUploading(true);
     let p = 0;
     const interval = setInterval(() => {
