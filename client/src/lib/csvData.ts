@@ -1,5 +1,6 @@
 
 import { RootRotSeverity } from './mockData';
+import Papa from 'papaparse';
 
 // Raw CSV Data from User
 export const CSV_RAW_DATA = `Image_ID,Root_Rot_Severity,Soil_Moisture_Percent,Root_Zone_Temp_C,Substrate_EC_mS_cm,Substrate_pH,Days_Since_Planting
@@ -243,18 +244,15 @@ plant_0236_severity_3.jpg,3,90.47,25.27,2.79,4.72,22
 plant_0237_severity_3.jpg,3,96.09,21.15,3.22,4.68,18`;
 
 export const parseCSV = (csvText: string) => {
-  const lines = csvText.trim().split('\\n');
-  const headers = lines[0].split(',');
-  
-  return lines.slice(1).map(line => {
-    const values = line.split(',');
-    const row: any = {};
-    headers.forEach((header, index) => {
-      const val = values[index];
-      // Auto-convert numbers
-      row[header] = isNaN(Number(val)) ? val : Number(val);
-    });
-    
+  const results = Papa.parse(csvText.trim(), {
+    header: true,
+    dynamicTyping: true,
+    skipEmptyLines: true
+  });
+
+  if (!results.data || results.data.length === 0) return [];
+
+  return results.data.map((row: any) => {
     // Map severity 0-3 to string labels
     const severityMap: Record<number, RootRotSeverity> = {
       0: 'Healthy',
@@ -263,21 +261,24 @@ export const parseCSV = (csvText: string) => {
       3: 'Severe'
     };
     
-    // Generate a mock "Yield" based on severity (Healthier = Higher Yield)
-    // Healthy (0): 80-100
-    // Low (1): 60-80
-    // Moderate (2): 40-60
-    // Severe (3): 10-40
+    // Map old keys to new keys if needed, or just ensure structure
     const severity = row['Root_Rot_Severity'];
-    let yieldBase = 90;
-    if (severity === 1) yieldBase = 70;
-    if (severity === 2) yieldBase = 50;
-    if (severity === 3) yieldBase = 25;
     
-    row['Estimated_Yield'] = yieldBase + (Math.random() * 20 - 10);
-    row['Severity_Label'] = severityMap[severity];
-    
-    return row;
+    // Generate a mock "Yield" based on severity if not present
+    let estimatedYield = row['Estimated_Yield'];
+    if (estimatedYield === undefined) {
+        let yieldBase = 90;
+        if (severity === 1) yieldBase = 70;
+        if (severity === 2) yieldBase = 50;
+        if (severity === 3) yieldBase = 25;
+        estimatedYield = yieldBase + (Math.random() * 20 - 10);
+    }
+
+    return {
+      ...row,
+      Estimated_Yield: estimatedYield,
+      Severity_Label: severityMap[severity] || 'Unknown'
+    };
   });
 };
 
