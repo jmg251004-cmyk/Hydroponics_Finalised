@@ -90,7 +90,7 @@ export function DatasetDashboard() {
          correlation = ss.sampleCorrelation(moisture, temp).toFixed(4);
       }
 
-      // 5. T-Test / Z-Test / ANOVA Simulation
+      // 5. T-Test / Z-Test
       const healthyYields = data.filter((d: any) => d.Root_Rot_Severity === 0).map((d: any) => d.Estimated_Yield);
       const severeYields = data.filter((d: any) => d.Root_Rot_Severity === 3).map((d: any) => d.Estimated_Yield);
       
@@ -108,7 +108,44 @@ export function DatasetDashboard() {
         zScoreSim = zVal.toFixed(2);
       }
 
-      return { yieldByGroup, bins, severityCounts, correlation, tTestResult, zScoreSim };
+      // 6. ANOVA F-Statistic (Real Calculation)
+      let anovaFStat = "N/A";
+      const groups = [0, 1, 2, 3].map(severity => data.filter((d: any) => d.Root_Rot_Severity === severity).map((d: any) => d.Estimated_Yield));
+      const groupsWithData = groups.filter(g => g.length > 0);
+      
+      if (groupsWithData.length > 1) {
+        // Calculate grand mean
+        const allYields = data.map((d: any) => d.Estimated_Yield);
+        const grandMean = ss.mean(allYields);
+        
+        // Sum of Squares Between Groups (SSB)
+        let ssb = 0;
+        groupsWithData.forEach(group => {
+          const groupMean = ss.mean(group);
+          ssb += group.length * Math.pow(groupMean - grandMean, 2);
+        });
+        
+        // Sum of Squares Within Groups (SSW)
+        let ssw = 0;
+        groupsWithData.forEach(group => {
+          const groupMean = ss.mean(group);
+          group.forEach(val => {
+            ssw += Math.pow(val - groupMean, 2);
+          });
+        });
+        
+        // Mean Square Between and Within
+        const k = groupsWithData.length;
+        const n = allYields.length;
+        const msb = ssb / (k - 1);
+        const msw = ssw / (n - k);
+        
+        // F-Statistic
+        const fStat = msb / (msw || 1);
+        anovaFStat = fStat.toFixed(4);
+      }
+
+      return { yieldByGroup, bins, severityCounts, correlation, tTestResult, zScoreSim, anovaFStat };
     } catch (err) {
       console.error("Stats calculation error:", err);
       return null;
@@ -190,8 +227,8 @@ export function DatasetDashboard() {
             />
             <StatCard 
               title="ANOVA (F-stat)" 
-              value="142.5" 
-              subtitle="Variance (Simulated)" 
+              value={stats?.anovaFStat ?? "N/A"} 
+              subtitle="Severity Groups Variance" 
             />
           </div>
         </CardContent>
