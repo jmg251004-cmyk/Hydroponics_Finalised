@@ -1,327 +1,385 @@
-
-import { useState, useMemo } from 'react';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
-  PieChart, Pie, Cell, ScatterChart, Scatter
+import { useMemo, useState } from 'react';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Scatter,
+  ScatterChart,
+  Tooltip,
+  XAxis,
+  YAxis,
 } from 'recharts';
-import { Upload, FileText, Activity, AlertCircle } from 'lucide-react';
-import { parseCSV, DEFAULT_PARSED_DATA } from '@/lib/csvData';
 import * as ss from 'simple-statistics';
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { BookOpenText, FileSpreadsheet, FlaskConical, Upload, Users } from 'lucide-react';
 
-export function DatasetDashboard() {
-  const [data, setData] = useState(DEFAULT_PARSED_DATA);
-  const [filename, setFilename] = useState("synthetic_root_rot_metadata.csv (Default)");
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { parseCSV } from '@/lib/csvData';
+import { getClassDisplayName, type HydroponicImageRecord } from '@/lib/hydroponicMetadata';
+import { buildPlantModel, MODEL_FEATURE_FIELDS, round } from '@/lib/plantModel';
+
+interface DatasetDashboardProps {
+  data: HydroponicImageRecord[];
+  filename: string;
+  onDataChange: (records: HydroponicImageRecord[]) => void;
+  onFilenameChange: (filename: string) => void;
+}
+
+const CLASS_COLORS: Record<string, string> = {
+  Healthy: '#15803d',
+  'K Deficiency': '#f59e0b',
+  'N Deficiency': '#facc15',
+  'P Deficiency': '#fb7185',
+  'Fungal Infection': '#ef4444',
+  Unknown: '#64748b',
+};
+
+function safeCorrelation(a: number[], b: number[]) {
+  if (a.length < 2 || b.length < 2 || a.length !== b.length) return 0;
+  if (new Set(a).size < 2 || new Set(b).size < 2) return 0;
+
+  try {
+    return ss.sampleCorrelation(a, b);
+  } catch {
+    return 0;
+  }
+}
+
+export function DatasetDashboard({
+  data,
+  filename,
+  onDataChange,
+  onFilenameChange,
+}: DatasetDashboardProps) {
   const [error, setError] = useState<string | null>(null);
-  
+
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      setFilename(file.name);
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        try {
-          const text = event.target?.result as string;
-          const parsed = parseCSV(text);
-          if (parsed.length === 0) throw new Error("No valid data found in CSV");
-          setData(parsed);
-          setError(null);
-        } catch (err) {
-          setError("Failed to parse CSV. Ensure format matches the template.");
-          console.error(err);
-        }
-      };
-      reader.readAsText(file);
-    }
+    if (!e.target.files?.[0]) return;
+
+    const file = e.target.files[0];
+    onFilenameChange(file.name);
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const parsed = parseCSV(String(event.target?.result ?? ''));
+        if (!parsed.length) throw new Error('No records parsed');
+        onDataChange(parsed);
+        setError(null);
+      } catch (uploadError) {
+        console.error(uploadError);
+        setError('The uploaded CSV could not be parsed. Please upload the project metadata.csv file.');
+      }
+    };
+
+    reader.readAsText(file);
   };
 
-  // --- Statistical Aggregations ---
-  const stats = useMemo(() => {
-    if (!data || data.length < 2) return null;
+  const analytics = useMemo(() => {
+    if (!data.length) return null;
 
-    try {
-      // 1. Average Yield per Severity
-      const yieldByGroup = [0, 1, 2, 3].map(severity => {
-        const groupData = data.filter((d: any) => d.Root_Rot_Severity === severity);
-        const avgYield = groupData.length 
-          ? groupData.reduce((sum: number, d: any) => sum + d.Estimated_Yield, 0) / groupData.length 
-          : 0;
-        const labels = ['Healthy', 'Early Rot', 'Moderate Rot', 'Severe Rot'];
-        return {
-          name: labels[severity],
-          Average_Yield: parseFloat(avgYield.toFixed(2)),
-          count: groupData.length
-        };
-      });
+    const model = buildPlantModel(data);
+    const labels = Array.from(new Set(data.map((record) => record.Class_Label))).sort();
+    const classDistribution = labels.map((label) => ({
+      label,
+      display: getClassDisplayName(label),
+      value: data.filter((record) => record.Class_Label === label).length,
+      fill: CLASS_COLORS[label] ?? CLASS_COLORS.Unknown,
+    }));
 
-      // 2. Histogram Data (Soil Moisture)
-      const moistureValues = data.map((d: any) => d.Soil_Moisture_Percent).filter((v: any) => typeof v === 'number' && !isNaN(v));
-      let bins: { bin: string, count: number }[] = [];
-      
-      if (moistureValues.length > 0) {
-        const minMoisture = Math.floor(Math.min(...moistureValues));
-        const maxMoisture = Math.ceil(Math.max(...moistureValues));
-        const binSize = 5;
-        
-        for (let i = minMoisture; i <= maxMoisture; i += binSize) {
-          const count = moistureValues.filter((v: number) => v >= i && v < i + binSize).length;
-          if (count > 0) { // Only push non-empty bins for cleaner chart
-             bins.push({ bin: `${i}-${i+binSize}`, count });
-          }
-        }
-      }
+    const barData = labels.map((label) => {
+      const rows = data.filter((record) => record.Class_Label === label);
+      return {
+        label: getClassDisplayName(label),
+        Brightness: round(ss.mean(rows.map((record) => record.Brightness)), 2),
+        GreenCoverage: round(ss.mean(rows.map((record) => record.Green_Coverage_Pct)), 2),
+        Contrast: round(ss.mean(rows.map((record) => record.Contrast)), 2),
+      };
+    });
 
-      // 3. Pie Chart Data
-      const severityCounts = [0, 1, 2, 3].map(severity => {
-        const count = data.filter((d: any) => d.Root_Rot_Severity === severity).length;
-        const labels = ['Healthy', 'Early Rot', 'Moderate Rot', 'Severe Rot'];
-        return { name: labels[severity], value: count };
-      });
+    const brightness = data.map((record) => record.Brightness);
+    const greenCoverage = data.map((record) => record.Green_Coverage_Pct);
+    const contrast = data.map((record) => record.Contrast);
+    const exg = data.map((record) => record.Excess_Green_Index);
 
-      // 4. Correlation
-      const moisture = data.map((d: any) => d.Soil_Moisture_Percent);
-      const temp = data.map((d: any) => d.Root_Zone_Temp_C);
-      
-      let correlation = "N/A";
-      if (moisture.length > 1 && temp.length > 1) {
-         correlation = ss.sampleCorrelation(moisture, temp).toFixed(4);
-      }
+    const correlation = safeCorrelation(brightness, greenCoverage);
 
-      // 5. T-Test / Z-Test
-      const healthyYields = data.filter((d: any) => d.Root_Rot_Severity === 0).map((d: any) => d.Estimated_Yield);
-      const severeYields = data.filter((d: any) => d.Root_Rot_Severity === 3).map((d: any) => d.Estimated_Yield);
-      
-      let tTestResult = "N/A";
-      let zScoreSim = "N/A";
-      
-      if (healthyYields.length > 1 && severeYields.length > 1) {
-        tTestResult = ss.tTestTwoSample(healthyYields, severeYields).toFixed(4);
-        
-        const meanDiff = ss.mean(healthyYields) - ss.mean(severeYields);
-        const var1 = ss.variance(healthyYields);
-        const var2 = ss.variance(severeYields);
-        // Approximate Z calculation
-        const zVal = meanDiff / Math.sqrt((var1/healthyYields.length) + (var2/severeYields.length));
-        zScoreSim = zVal.toFixed(2);
-      }
-
-      // 6. ANOVA F-Statistic (Real Calculation)
-      let anovaFStat = "N/A";
-      const groups = [0, 1, 2, 3].map(severity => data.filter((d: any) => d.Root_Rot_Severity === severity).map((d: any) => d.Estimated_Yield));
-      const groupsWithData = groups.filter(g => g.length > 0);
-      
-      if (groupsWithData.length > 1) {
-        // Calculate grand mean
-        const allYields = data.map((d: any) => d.Estimated_Yield);
-        const grandMean = ss.mean(allYields);
-        
-        // Sum of Squares Between Groups (SSB)
-        let ssb = 0;
-        groupsWithData.forEach(group => {
-          const groupMean = ss.mean(group);
-          ssb += group.length * Math.pow(groupMean - grandMean, 2);
-        });
-        
-        // Sum of Squares Within Groups (SSW)
-        let ssw = 0;
-        groupsWithData.forEach(group => {
-          const groupMean = ss.mean(group);
-          group.forEach(val => {
-            ssw += Math.pow(val - groupMean, 2);
-          });
-        });
-        
-        // Mean Square Between and Within
-        const k = groupsWithData.length;
-        const n = allYields.length;
-        const msb = ssb / (k - 1);
-        const msw = ssw / (n - k);
-        
-        // F-Statistic
-        const fStat = msb / (msw || 1);
-        anovaFStat = fStat.toFixed(4);
-      }
-
-      return { yieldByGroup, bins, severityCounts, correlation, tTestResult, zScoreSim, anovaFStat };
-    } catch (err) {
-      console.error("Stats calculation error:", err);
-      return null;
-    }
+    return {
+      model,
+      classDistribution,
+      barData,
+      correlation: round(correlation, 4),
+      avgBrightness: round(ss.mean(brightness), 2),
+      avgContrast: round(ss.mean(contrast), 2),
+      avgExg: round(ss.mean(exg), 2),
+      sampleCount: data.length,
+      featureCount: MODEL_FEATURE_FIELDS.length,
+    };
   }, [data]);
 
-  const COLORS = ['#22c55e', '#eab308', '#f97316', '#ef4444'];
-
-  if (!stats) {
+  if (!analytics) {
     return (
-      <Alert variant="destructive">
-        <AlertCircle className="h-4 w-4" />
-        <AlertTitle>Data Error</AlertTitle>
-        <AlertDescription>
-          Insufficient data to generate dashboard. Please upload a valid CSV with at least 2 records.
-        </AlertDescription>
+      <Alert>
+        <AlertTitle>No data loaded</AlertTitle>
+        <AlertDescription>Upload the team metadata CSV to generate the DAV dashboard.</AlertDescription>
       </Alert>
     );
   }
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
-      {/* Upload Section */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between bg-card p-6 rounded-xl border shadow-sm gap-4">
-        <div>
-          <h2 className="text-lg font-semibold flex items-center gap-2">
-            <FileText className="h-5 w-5 text-primary" />
-            Dataset Loaded
-          </h2>
-          <p className="text-sm font-medium text-foreground mt-1 break-all">{filename}</p>
-          <p className="text-xs text-muted-foreground mt-1">
-            {data.length} records loaded successfully.
-          </p>
-        </div>
-        <div className="shrink-0">
-          <Label htmlFor="csv-upload" className="cursor-pointer">
-            <div className="flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-md hover:bg-primary/90 transition-colors shadow-sm">
-              <Upload className="h-4 w-4" />
-              Upload New CSV
+      <Card className="overflow-hidden border-slate-200 bg-gradient-to-br from-white via-amber-50 to-rose-50">
+        <CardContent className="grid gap-6 p-6 lg:grid-cols-[1.8fr_1fr]">
+          <div className="space-y-4">
+            <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.24em] text-amber-700">
+              <BookOpenText className="h-4 w-4" />
+              Data Analytics & Visualization Lab
             </div>
-            <Input id="csv-upload" type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
-          </Label>
-        </div>
-      </div>
+            <div>
+              <h2 className="text-3xl font-semibold tracking-tight text-slate-900">Pinnacle Project Analytics Dashboard</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+                This dashboard analyzes plant deficiency metadata from the pinnacle project dataset, compares predictive
+                models, and presents statistical evidence needed for the DAV end-sem practical examination.
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <InfoStrip
+                icon={Users}
+                title="Team"
+                body="Darshan and Joselet Mebel Glancy B"
+              />
+              <InfoStrip
+                icon={FlaskConical}
+                title="Guide"
+                body="Dr. Sabireen H"
+              />
+              <InfoStrip
+                icon={FileSpreadsheet}
+                title="Dataset"
+                body={`${filename} with ${analytics.sampleCount} labeled records`}
+              />
+              <InfoStrip
+                icon={BookOpenText}
+                title="Problem Statement"
+                body="Build a DAV dashboard for plant deficiency analytics using metadata-driven statistical and predictive methods."
+              />
+            </div>
+          </div>
 
-      {error && (
-        <Alert variant="destructive">
-          <AlertCircle className="h-4 w-4" />
-          <AlertTitle>Error</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+          <div className="space-y-4 rounded-3xl border bg-white/80 p-5 shadow-sm">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">Dataset Control</div>
+              <div className="mt-1 text-sm text-slate-600">Upload the approved `metadata.csv` to refresh the analysis.</div>
+            </div>
 
-      {/* Statistical Validation Panel */}
-      <Card className="bg-muted/40 border-muted">
-        <CardHeader className="pb-4 border-b bg-muted/20">
-          <CardTitle className="text-base flex items-center gap-2 font-medium">
-            <Activity className="h-4 w-4 text-primary" />
-            Statistical Validation Model
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            <StatCard 
-              title="Correlation (r)" 
-              value={stats?.correlation ?? "N/A"} 
-              subtitle="Moisture vs Temp" 
-              highlight={Math.abs(Number(stats?.correlation)) > 0.5}
-            />
-            <StatCard 
-              title="T-Test (t-stat)" 
-              value={stats?.tTestResult ?? "N/A"} 
-              subtitle="Healthy vs Severe" 
-            />
-            <StatCard 
-              title="Z-Score (approx)" 
-              value={stats?.zScoreSim ?? "N/A"} 
-              subtitle="Significance Test" 
-            />
-            <StatCard 
-              title="ANOVA (F-stat)" 
-              value={stats?.anovaFStat ?? "N/A"} 
-              subtitle="Severity Groups Variance" 
-            />
+            <Label htmlFor="csv-upload" className="cursor-pointer">
+              <div className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white transition-colors hover:bg-slate-800">
+                <Upload className="h-4 w-4" />
+                Upload Metadata CSV
+              </div>
+              <Input id="csv-upload" type="file" accept=".csv" className="hidden" onChange={handleFileUpload} />
+            </Label>
+
+            <div className="grid gap-3">
+              <StatCard title="Best Model" value={analytics.model?.algorithmName ?? 'Not ready'} subtitle="Top benchmarked classifier" />
+              <StatCard title="Accuracy" value={`${analytics.model?.accuracy ?? 0}%`} subtitle="Leave-one-out validation" />
+              <StatCard title="Macro F1" value={`${analytics.model?.macroF1 ?? 0}%`} subtitle="Class-balanced model quality" />
+              <StatCard
+                title="Top F-Test Feature"
+                value={analytics.model?.featureScores[0]?.label ?? 'N/A'}
+                subtitle={`F = ${analytics.model?.featureScores[0]?.fScore ?? 0}`}
+              />
+            </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* Charts Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        
-        <ChartCard title="Average Yield per Treatment Group" description="Estimated yield based on severity classification">
-          <BarChart data={stats.yieldByGroup}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-            <XAxis dataKey="name" tick={{fontSize: 12}} interval={0} height={40} />
-            <YAxis tick={{fontSize: 12}} />
-            <Tooltip 
-              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-              cursor={{fill: 'hsl(var(--muted)/0.4)'}}
-            />
-            <Bar dataKey="Average_Yield" fill="hsl(var(--primary))" radius={[6, 6, 0, 0]} barSize={50} />
-          </BarChart>
-        </ChartCard>
+      {error && (
+        <Alert variant="destructive">
+          <AlertTitle>CSV upload failed</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
-        <ChartCard title="Root Rot Severity Proportion" description="Distribution of disease categories">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <StatCard title="Records" value={String(analytics.sampleCount)} subtitle="Rows trained from metadata.csv" />
+        <StatCard title="Classes" value={String(analytics.classDistribution.length)} subtitle="Deficiency categories found" />
+        <StatCard title="Correlation r" value={analytics.correlation.toFixed(4)} subtitle="Brightness vs green coverage" />
+        <StatCard title="Features" value={String(analytics.featureCount)} subtitle="Metadata attributes used" />
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <ChartCard
+          title="Class Distribution"
+          description="Class balance inside the metadata dataset used for DAV analysis."
+        >
           <PieChart>
             <Pie
-              data={stats.severityCounts}
+              data={analytics.classDistribution}
+              dataKey="value"
+              nameKey="display"
               cx="50%"
               cy="50%"
-              innerRadius={70}
-              outerRadius={100}
-              paddingAngle={4}
-              dataKey="value"
+              innerRadius={65}
+              outerRadius={112}
+              paddingAngle={3}
               stroke="none"
             >
-              {stats.severityCounts.map((entry, index) => (
-                <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+              {analytics.classDistribution.map((entry) => (
+                <Cell key={entry.label} fill={entry.fill} />
               ))}
             </Pie>
-            <Tooltip contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }} />
+            <Tooltip />
             <Legend verticalAlign="bottom" iconType="circle" />
           </PieChart>
         </ChartCard>
 
-        <ChartCard title="Frequency Distribution: Moisture" description="Histogram of soil moisture levels (%)">
-           <BarChart data={stats.bins}>
+        <ChartCard
+          title="Average Feature Trends by Class"
+          description="Mean brightness, green coverage, and contrast for each deficiency category."
+        >
+          <BarChart data={analytics.barData}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
-            <XAxis dataKey="bin" tick={{fontSize: 12}} />
-            <YAxis tick={{fontSize: 12}} />
-            <Tooltip 
-              cursor={{fill: 'transparent'}} 
-              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-            />
-            <Bar dataKey="count" fill="hsl(var(--chart-3))" radius={[4, 4, 0, 0]} barSize={40} />
+            <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={0} height={72} />
+            <YAxis tick={{ fontSize: 12 }} />
+            <Tooltip />
+            <Legend />
+            <Bar dataKey="Brightness" fill="#0f766e" radius={[6, 6, 0, 0]} />
+            <Bar dataKey="GreenCoverage" fill="#65a30d" radius={[6, 6, 0, 0]} />
+            <Bar dataKey="Contrast" fill="#dc2626" radius={[6, 6, 0, 0]} />
           </BarChart>
         </ChartCard>
 
-        <ChartCard title="Correlation: Moisture vs. Temp" description="Relationship between environmental variables">
+        <ChartCard
+          title="Brightness vs Green Coverage"
+          description="Scatter view used to examine separability between metadata-driven deficiency classes."
+        >
           <ScatterChart>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
-            <XAxis type="number" dataKey="Soil_Moisture_Percent" name="Moisture" unit="%" tick={{fontSize: 12}} />
-            <YAxis type="number" dataKey="Root_Zone_Temp_C" name="Temp" unit="°C" tick={{fontSize: 12}} />
-            <Tooltip 
-              cursor={{ strokeDasharray: '3 3' }} 
-              contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
-            />
-            <Scatter name="Samples" data={data} fill="hsl(var(--chart-2))" opacity={0.6} />
+            <XAxis type="number" dataKey="Brightness" name="Brightness" tick={{ fontSize: 12 }} />
+            <YAxis type="number" dataKey="Green_Coverage_Pct" name="Green Coverage" tick={{ fontSize: 12 }} />
+            <Tooltip cursor={{ strokeDasharray: '3 3' }} />
+            {analytics.classDistribution.map((entry) => (
+              <Scatter
+                key={entry.label}
+                name={entry.display}
+                data={data.filter((record) => record.Class_Label === entry.label)}
+                fill={entry.fill}
+                opacity={0.75}
+              />
+            ))}
           </ScatterChart>
         </ChartCard>
 
+        <Card className="overflow-hidden">
+          <CardHeader className="border-b bg-slate-50/70">
+            <CardTitle className="text-base">ANOVA F-Test Ranking</CardTitle>
+            <CardDescription>
+              Higher F-score means the feature separates deficiency groups more strongly.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 p-6">
+            {analytics.model?.featureScores.slice(0, 6).map((feature) => (
+              <div key={feature.key} className="rounded-2xl border bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="font-medium text-slate-900">{feature.label}</div>
+                    <div className="text-xs uppercase tracking-[0.18em] text-slate-500">ANOVA / F-test</div>
+                  </div>
+                  <div className="text-xl font-semibold text-slate-900">{feature.fScore.toFixed(3)}</div>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
       </div>
+
+      <Card className="border-slate-200 bg-slate-50/60">
+        <CardHeader>
+          <CardTitle>Inference Snapshot</CardTitle>
+          <CardDescription>Short DAV-oriented summary for project report and viva discussion.</CardDescription>
+        </CardHeader>
+        <CardContent className="grid gap-4 md:grid-cols-3">
+          <SummaryNote
+            title="Statistical Finding"
+            body={`Green coverage and excess green are among the strongest separating features, with the top F-test score at ${analytics.model?.featureScores[0]?.fScore ?? 0}.`}
+          />
+          <SummaryNote
+            title="Best Predictive Model"
+            body={`${analytics.model?.algorithmName ?? 'The trained model'} gave the best validation result on this metadata, with accuracy ${analytics.model?.accuracy ?? 0}% and macro F1 ${analytics.model?.macroF1 ?? 0}%.`}
+          />
+          <SummaryNote
+            title="DAV Conclusion"
+            body="The dataset is suitable for visual analytics and classical metadata-based classification, but exact image-level diagnosis would need a larger labeled image model in future work."
+          />
+        </CardContent>
+      </Card>
     </div>
   );
 }
 
-// --- Subcomponents for "Pretty" UI ---
-
-function StatCard({ title, value, subtitle, highlight }: { title: string, value: string, subtitle: string, highlight?: boolean }) {
+function InfoStrip({
+  icon: Icon,
+  title,
+  body,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  title: string;
+  body: string;
+}) {
   return (
-    <div className={`p-4 rounded-xl border bg-card shadow-sm transition-all hover:shadow-md ${highlight ? 'border-primary/50 bg-primary/5' : ''}`}>
-      <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">{title}</div>
-      <div className={`text-2xl font-mono font-bold ${highlight ? 'text-primary' : 'text-foreground'}`}>{value}</div>
-      <div className="text-xs text-muted-foreground mt-1">{subtitle}</div>
+    <div className="rounded-2xl border bg-white/80 p-4 shadow-sm">
+      <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+        <Icon className="h-4 w-4" />
+        {title}
+      </div>
+      <div className="mt-2 text-sm leading-6 text-slate-700">{body}</div>
     </div>
   );
 }
 
-function ChartCard({ title, description, children }: { title: string, description: string, children: React.ReactElement }) {
+function StatCard({ title, value, subtitle }: { title: string; value: string; subtitle: string }) {
+  return (
+    <div className="rounded-2xl border bg-white p-4 shadow-sm">
+      <div className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">{title}</div>
+      <div className="mt-2 text-2xl font-semibold text-slate-900">{value}</div>
+      <div className="mt-1 text-sm text-slate-500">{subtitle}</div>
+    </div>
+  );
+}
+
+function SummaryNote({ title, body }: { title: string; body: string }) {
+  return (
+    <div className="rounded-2xl border bg-white p-4 shadow-sm">
+      <div className="text-sm font-semibold text-slate-900">{title}</div>
+      <div className="mt-2 text-sm leading-6 text-slate-600">{body}</div>
+    </div>
+  );
+}
+
+function ChartCard({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: React.ReactElement;
+}) {
   return (
     <Card className="overflow-hidden">
-      <CardHeader className="border-b bg-muted/10 pb-4">
-        <CardTitle className="text-base font-semibold">{title}</CardTitle>
-        <CardDescription className="text-xs">{description}</CardDescription>
+      <CardHeader className="border-b bg-slate-50/70">
+        <CardTitle className="text-base">{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
       </CardHeader>
-      <CardContent className="p-6 h-[350px]">
+      <CardContent className="h-[360px] p-6">
         <ResponsiveContainer width="100%" height="100%">
           {children}
         </ResponsiveContainer>

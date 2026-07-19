@@ -48,7 +48,7 @@ app.use((req, res, next) => {
       }
 
       if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
+        logLine = logLine.slice(0, 79) + "...";
       }
 
       log(logLine);
@@ -79,12 +79,40 @@ export default async function runApp(
   // Other ports are firewalled. Default to 5000 if not specified.
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
-  const port = parseInt(process.env.PORT || '5000', 10);
-  server.listen({
-    port,
-    host: "0.0.0.0",
-    reusePort: true,
-  }, () => {
-    log(`serving on port ${port}`);
-  });
+  const preferredPort = parseInt(process.env.PORT || '5000', 10);
+  const isDev = process.env.NODE_ENV !== 'production';
+  const fallbackDevPort = preferredPort === 5000 ? 5001 : preferredPort + 1;
+
+  const listen = (port: number) =>
+    new Promise<void>((resolve, reject) => {
+      const onError = (error: NodeJS.ErrnoException) => {
+        server.off('listening', onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        server.off('error', onError);
+        resolve();
+      };
+
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port);
+    });
+
+  let activePort = preferredPort;
+  try {
+    await listen(preferredPort);
+  } catch (error) {
+    const typedError = error as NodeJS.ErrnoException;
+    if (!(isDev && typedError.code === 'EADDRINUSE')) {
+      throw error;
+    }
+
+    activePort = fallbackDevPort;
+    log(`port ${preferredPort} is in use; trying ${fallbackDevPort}`, 'express');
+    await listen(fallbackDevPort);
+  }
+
+  log(`serving on http://localhost:${activePort}`);
 }
+

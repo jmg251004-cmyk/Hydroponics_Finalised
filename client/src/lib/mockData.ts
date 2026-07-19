@@ -75,6 +75,23 @@ export const REMEDIAL_MEASURES = {
       "Remove and destroy severely infected plant material."
     ]
   },
+  'Fungal Infection': {
+    title: "Fungal Infection Detected",
+    actions: [
+      "Isolate affected plants immediately to prevent spread.",
+      "Apply an appropriate fungicide or biological treatment.",
+      "Reduce humidity and improve airflow around the canopy.",
+      "Remove badly infected tissue and sanitize nearby equipment."
+    ]
+  },
+  'Unknown': {
+    title: "Image Could Not Be Reliably Classified",
+    actions: [
+      "Upload a clear close-up of a single plant leaf under good lighting.",
+      "Avoid screenshots, text images, or photos that do not primarily show a leaf.",
+      "Use the demo samples for UI testing until a trained backend model is connected."
+    ]
+  },
   // For Severity Levels
   'Low': { title: "Low Root Rot Risk", actions: ["Monitor soil moisture closely.", "Ensure drainage is adequate."] },
   'Moderate': { title: "Moderate Root Rot Risk", actions: ["Reduce irrigation frequency.", "Apply preventative biological fungicide.", "Check for standing water."] },

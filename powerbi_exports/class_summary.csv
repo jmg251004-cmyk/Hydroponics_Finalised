@@ -1,0 +1,5 @@
+Class_Label,Sample_Count,Avg_Brightness,Avg_Contrast,Avg_Green_Coverage_Pct,Avg_Excess_Green_Index,Avg_Edge_Density
+Potassium Deficiency,72,160.0903,68.9782,23.6315,36.7778,0.014355
+Nitrogen Deficiency,58,168.4395,53.7266,40.1503,85.4255,0.013125
+Phosphorous Deficiency,66,136.5638,69.7309,27.3488,39.6764,0.0188
+Pythium / Fungal Infection,12,166.3255,66.8001,49.7335,84.1672,0.010674

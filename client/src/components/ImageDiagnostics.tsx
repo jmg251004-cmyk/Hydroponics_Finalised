@@ -1,120 +1,173 @@
+import { useMemo, useRef, useState } from 'react';
+import { AlertTriangle, Camera, Check, Loader2, Upload } from 'lucide-react';
 
-import { useState, useRef } from 'react';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Upload, Camera, Loader2, Check, AlertTriangle, X } from 'lucide-react';
-import { REMEDIAL_MEASURES } from "@/lib/mockData";
-import { Progress } from "@/components/ui/progress";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
+import { Progress } from '@/components/ui/progress';
+import { REMEDIAL_MEASURES } from '@/lib/mockData';
+import { extractMetadataFromImageBlob, getClassDisplayName, type HydroponicImageRecord } from '@/lib/hydroponicMetadata';
+import {
+  buildPlantModel,
+  MODEL_FEATURE_FIELDS,
+  normalizeValue,
+  predictPlantLabel,
+  round,
+  type ModelFeatureKey,
+} from '@/lib/plantModel';
 
-// Import generated images
 import healthyLeaf from '@assets/generated_images/close_up_of_a_healthy_green_plant_leaf.png';
 import kDefLeaf from '@assets/generated_images/plant_leaf_showing_potassium_deficiency_symptoms.png';
 
-export function ImageDiagnostics() {
+interface ImageDiagnosticsProps {
+  data: HydroponicImageRecord[];
+}
+
+interface DiagnosticResult {
+  class: string;
+  confidence: number;
+  explanation: string;
+  featureNotes: string[];
+}
+
+async function imageUrlToBlob(imageUrl: string) {
+  const response = await fetch(imageUrl);
+  return response.blob();
+}
+
+export function ImageDiagnostics({ data }: ImageDiagnosticsProps) {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [result, setResult] = useState<{ class: string, confidence: number } | null>(null);
+  const [result, setResult] = useState<DiagnosticResult | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      const file = e.target.files[0];
-      const url = URL.createObjectURL(file);
-      setSelectedImage(url);
-      setResult(null); // Reset result
-    }
-  };
+  const model = useMemo(() => buildPlantModel(data), [data]);
 
-  const handleDemoImage = (img: string) => {
-    setSelectedImage(img);
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files?.[0]) return;
+    const file = e.target.files[0];
+    setUploadedFile(file);
+    setSelectedImage(URL.createObjectURL(file));
     setResult(null);
   };
 
-  const analyzeImage = () => {
-    if (!selectedImage) return;
-    
+  const handleDemoImage = (imageUrl: string) => {
+    setUploadedFile(null);
+    setSelectedImage(imageUrl);
+    setResult(null);
+  };
+
+  const analyzeImage = async () => {
+    if (!selectedImage || !model) return;
+
     setIsAnalyzing(true);
-    
-    // Mock API Delay
-    setTimeout(() => {
-      setIsAnalyzing(false);
-      // Simple mock logic based on which demo image is selected, or random if uploaded
-      let predictedClass = 'Healthy';
-      if (selectedImage === kDefLeaf) predictedClass = 'K Deficiency';
-      else if (selectedImage === healthyLeaf) predictedClass = 'Healthy';
-      else {
-        // Default to "Healthy" more often, or pick a deficiency
-        const roll = Math.random();
-        if (roll > 0.7) { // 30% chance of finding a deficiency
-           const classes = ['K Deficiency', 'N Deficiency', 'P Deficiency', 'FN'];
-           predictedClass = classes[Math.floor(Math.random() * classes.length)];
-        } else {
-           predictedClass = 'Healthy';
-        }
-      }
-      
+
+    try {
+      const blob = uploadedFile ?? await imageUrlToBlob(selectedImage);
+      const metadata = await extractMetadataFromImageBlob(
+        blob,
+        uploadedFile?.name ?? 'demo-image.png',
+        uploadedFile?.name ?? selectedImage,
+      );
+
+      const normalizedInput = Object.fromEntries(
+        MODEL_FEATURE_FIELDS.map(({ key }) => [
+          key,
+          normalizeValue(Number(metadata[key]), model.featureStats[key].mean, model.featureStats[key].deviation),
+        ]),
+      ) as Record<ModelFeatureKey, number>;
+
+      const { bestLabel: predictedClass, confidence, matchCount: matchingNeighbors } = predictPlantLabel(normalizedInput, model);
+
+      const centroid = model.classCentroids.find((entry) => entry.label === predictedClass)?.centroid;
+      const featureNotes = centroid
+        ? MODEL_FEATURE_FIELDS.slice(0, 4).map(({ key, label }) => {
+            const value = Number(metadata[key]);
+            const delta = round(value - centroid[key], key === 'Green_Coverage_Pct' ? 1 : 2);
+            const relation = delta >= 0 ? 'higher' : 'lower';
+            return `The image has ${relation} ${label} than the average ${getClassDisplayName(predictedClass as any)} sample by ${Math.abs(delta)}.`;
+          })
+        : [];
+
+      const explanation =
+        predictedClass === 'Unknown'
+          ? 'The uploaded image could not be matched reliably with the current dataset.'
+          : model.k > 0
+            ? `${matchingNeighbors} of the ${model.k} nearest metadata samples support ${getClassDisplayName(predictedClass as any)}, so the uploaded image is mapped to that deficiency pattern.`
+            : `${model.algorithmName} identified the uploaded image as ${getClassDisplayName(predictedClass as any)} based on the extracted metadata features.`;
+
       setResult({
         class: predictedClass,
-        confidence: 0.85 + Math.random() * 0.14
+        confidence,
+        explanation,
+        featureNotes,
       });
-    }, 2000);
+    } catch (error) {
+      console.error(error);
+      setResult({
+        class: 'Unknown',
+        confidence: 0,
+        explanation: 'The image could not be analyzed. Please upload a clearer single-leaf image.',
+        featureNotes: [],
+      });
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const remedial = result ? REMEDIAL_MEASURES[result.class as keyof typeof REMEDIAL_MEASURES] : null;
 
   return (
-    <div className="space-y-8 max-w-5xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700">
-      <div className="text-center space-y-4">
-        <h2 className="text-3xl font-bold tracking-tight">Visual Plant Diagnostics</h2>
-        <p className="text-muted-foreground max-w-2xl mx-auto">
-          Upload a leaf image or use our camera integration to detect deficiencies and diseases using our Convolutional Neural Network (CNN).
+    <div className="mx-auto max-w-5xl space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
+      <div className="space-y-4 text-center">
+        <h2 className="text-3xl font-bold tracking-tight">Image Prediction</h2>
+        <p className="mx-auto max-w-2xl text-muted-foreground">
+          Upload a leaf image and the dashboard will extract metadata, then classify it using the best benchmarked model trained from `metadata.csv`.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        
-        {/* Left: Upload Area */}
+      <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
         <Card className="h-fit">
           <CardHeader>
             <CardTitle>Image Upload</CardTitle>
-            <CardDescription>Supported formats: .jpg, .png</CardDescription>
+            <CardDescription>Supported formats: .jpg, .png, .jpeg. Best results come from a clear single-leaf image.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <div 
+            <div
               className={`
-                border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors
+                cursor-pointer rounded-xl border-2 border-dashed p-10 text-center transition-colors
                 ${selectedImage ? 'border-primary/50 bg-primary/5' : 'border-muted-foreground/25 hover:border-primary/50 hover:bg-muted/50'}
               `}
               onClick={() => fileInputRef.current?.click()}
             >
-              <input 
-                type="file" 
-                ref={fileInputRef} 
-                className="hidden" 
+              <input
+                type="file"
+                ref={fileInputRef}
+                className="hidden"
                 accept="image/*"
                 onChange={handleFileChange}
               />
-              
+
               {selectedImage ? (
                 <div className="relative aspect-video w-full overflow-hidden rounded-lg shadow-md">
-                   <img src={selectedImage} alt="Preview" className="object-cover w-full h-full" />
-                   <div className="absolute inset-0 bg-black/10" />
+                  <img src={selectedImage} alt="Preview" className="h-full w-full object-cover" />
+                  <div className="absolute inset-0 bg-black/10" />
                 </div>
               ) : (
-                <div className="py-8 space-y-4">
-                  <div className="mx-auto w-16 h-16 rounded-full bg-muted flex items-center justify-center">
+                <div className="space-y-4 py-8">
+                  <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-muted">
                     <Upload className="h-8 w-8 text-muted-foreground" />
                   </div>
                   <div>
-                    <p className="font-medium">Click to upload image</p>
-                    <p className="text-xs text-muted-foreground mt-1">or drag and drop here</p>
+                    <p className="font-medium">Click to upload leaf image</p>
+                    <p className="mt-1 text-xs text-muted-foreground">or drag and drop here</p>
                   </div>
                 </div>
               )}
             </div>
 
-            <div className="flex gap-2 justify-center">
+            <div className="flex justify-center gap-2">
               <Button variant="outline" size="sm" onClick={() => handleDemoImage(healthyLeaf)}>
                 Demo: Healthy
               </Button>
@@ -124,16 +177,11 @@ export function ImageDiagnostics() {
             </div>
           </CardContent>
           <CardFooter>
-            <Button 
-              className="w-full" 
-              size="lg" 
-              onClick={analyzeImage} 
-              disabled={!selectedImage || isAnalyzing}
-            >
+            <Button className="w-full" size="lg" onClick={analyzeImage} disabled={!selectedImage || isAnalyzing || !model}>
               {isAnalyzing ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Processing CNN...
+                  Analyzing Leaf Image...
                 </>
               ) : (
                 <>
@@ -145,95 +193,106 @@ export function ImageDiagnostics() {
           </CardFooter>
         </Card>
 
-        {/* Right: Results Area */}
         <div className="space-y-6">
           {isAnalyzing && (
             <Card className="border-primary/20">
-              <CardContent className="py-10 space-y-4">
-                <div className="flex justify-between text-sm font-medium mb-2">
-                  <span>Analyzing Leaf Textures...</span>
+              <CardContent className="space-y-4 py-10">
+                <div className="mb-2 flex justify-between text-sm font-medium">
+                  <span>Comparing image with dataset samples...</span>
                   <span className="text-muted-foreground">78%</span>
                 </div>
                 <Progress value={78} className="h-2" />
-                <div className="grid grid-cols-3 gap-2 mt-4">
-                   <div className="h-20 bg-muted rounded animate-pulse delay-75" />
-                   <div className="h-20 bg-muted rounded animate-pulse delay-150" />
-                   <div className="h-20 bg-muted rounded animate-pulse delay-300" />
+                <div className="mt-4 grid grid-cols-3 gap-2">
+                  <div className="h-20 animate-pulse rounded bg-muted delay-75" />
+                  <div className="h-20 animate-pulse rounded bg-muted delay-150" />
+                  <div className="h-20 animate-pulse rounded bg-muted delay-300" />
                 </div>
               </CardContent>
             </Card>
           )}
 
-          {!isAnalyzing && result && remedial && (
+          {!isAnalyzing && result && (
             <div className="space-y-6 animate-in slide-in-from-right-8 duration-500">
-              
-              {/* Diagnosis Card */}
-              <Card className="overflow-hidden border-l-4" style={{ 
-                borderLeftColor: result.class === 'Healthy' ? '#22c55e' : '#ef4444'
-              }}>
+              <Card
+                className="overflow-hidden border-l-4"
+                style={{ borderLeftColor: result.class === 'Healthy' ? '#22c55e' : '#ef4444' }}
+              >
                 <CardHeader className="bg-muted/30 pb-4">
                   <div className="flex items-center justify-between">
                     <CardTitle>Diagnosis Result</CardTitle>
-                    <Badge variant={result.class === 'Healthy' ? 'default' : 'destructive'} className="text-base px-4 py-1">
-                      {(result.confidence * 100).toFixed(1)}% Match
+                    <Badge variant={result.class === 'Healthy' ? 'default' : 'destructive'} className="px-4 py-1 text-base">
+                      {result.class === 'Unknown' ? 'Not Verified' : `${result.confidence}% Match`}
                     </Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="pt-6">
                   <div className="flex items-center gap-4">
-                    <div className={`p-3 rounded-full ${result.class === 'Healthy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    <div className={`rounded-full p-3 ${result.class === 'Healthy' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                       {result.class === 'Healthy' ? <Check className="h-8 w-8" /> : <AlertTriangle className="h-8 w-8" />}
                     </div>
                     <div>
-                      <h3 className="text-3xl font-bold tracking-tight text-foreground">
-                        {result.class}
-                      </h3>
-                      <p className="text-muted-foreground mt-1">
-                        Detected via Convolutional Neural Network
-                      </p>
+                      <h3 className="text-3xl font-bold tracking-tight text-foreground">{getClassDisplayName(result.class as any)}</h3>
+                      <p className="mt-1 text-muted-foreground">{result.explanation}</p>
                     </div>
                   </div>
                 </CardContent>
               </Card>
 
-              {/* Remedial Actions */}
               <Card>
                 <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <span className="bg-primary/10 p-1.5 rounded text-primary">
-                      <Check className="h-4 w-4" />
-                    </span>
-                    Remedial Measures
-                  </CardTitle>
+                  <CardTitle>Why This Image Was Classified This Way</CardTitle>
+                  <CardDescription>The result is based on metadata extracted from the uploaded image and compared with the labeled metadata training set.</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="prose prose-sm dark:prose-invert max-w-none">
-                    <h4 className="text-lg font-semibold text-foreground mb-3">{remedial.title}</h4>
-                    <ul className="space-y-2">
-                      {remedial.actions.map((action, i) => (
-                        <li key={i} className="flex items-start gap-3 p-3 rounded-lg bg-muted/50">
-                          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border bg-background text-xs font-medium">
-                            {i + 1}
-                          </span>
-                          <span className="text-sm leading-6">{action}</span>
+                  <ul className="space-y-2">
+                    {result.featureNotes.length > 0 ? (
+                      result.featureNotes.map((note) => (
+                        <li key={note} className="rounded-lg bg-muted/50 p-3 text-sm leading-6">
+                          {note}
                         </li>
-                      ))}
-                    </ul>
-                  </div>
+                      ))
+                    ) : (
+                      <li className="rounded-lg bg-muted/50 p-3 text-sm leading-6">
+                        Upload a clearer single-leaf image to get more detailed feature explanations.
+                      </li>
+                    )}
+                  </ul>
                 </CardContent>
               </Card>
+
+              {remedial && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Possible Cause and Remedial Measures</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="prose prose-sm max-w-none">
+                      <h4 className="mb-3 text-lg font-semibold text-foreground">{remedial.title}</h4>
+                      <ul className="space-y-2">
+                        {remedial.actions.map((action, index) => (
+                          <li key={index} className="flex items-start gap-3 rounded-lg bg-muted/50 p-3">
+                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border bg-background text-xs font-medium">
+                              {index + 1}
+                            </span>
+                            <span className="text-sm leading-6">{action}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
             </div>
           )}
 
           {!isAnalyzing && !result && (
-            <div className="h-full flex flex-col items-center justify-center p-12 border-2 border-dashed rounded-xl text-muted-foreground">
-              <Camera className="h-16 w-16 mb-4 opacity-20" />
+            <div className="flex h-full flex-col items-center justify-center rounded-xl border-2 border-dashed p-12 text-muted-foreground">
+              <Camera className="mb-4 h-16 w-16 opacity-20" />
               <p className="text-lg font-medium">Ready for Analysis</p>
-              <p className="text-sm">Upload an image to see diagnostic results</p>
+              <p className="text-sm">Upload an image to see the predicted deficiency and explanation</p>
             </div>
           )}
         </div>
-
       </div>
     </div>
   );

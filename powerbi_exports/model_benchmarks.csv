@@ -1,0 +1,6 @@
+Model_Name,Accuracy_Pct,Macro_F1_Pct
+1-NN Metadata Classifier,91.3462,93.11
+3-NN Metadata Classifier,89.4231,91.5152
+5-NN Metadata Classifier,89.4231,91.4475
+Nearest Centroid,62.0192,63.3351
+Gaussian Naive Bayes,70.1923,72.7973

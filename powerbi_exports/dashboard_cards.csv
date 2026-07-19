@@ -1,0 +1,7 @@
+Metric,Value
+Dataset Rows,208
+Distinct Classes,4
+Best Model,1-NN Metadata Classifier
+Best Accuracy (%),91.3462
+Best Macro F1 (%),93.11
+Top F-Test Feature,Excess_Green_Index
